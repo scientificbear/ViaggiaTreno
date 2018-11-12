@@ -1,5 +1,6 @@
 import asyncio
 from aiohttp import ClientSession
+import os
 import logging
 logging.basicConfig(format='%(asctime)s : %(levelname)s : %(message)s', level=logging.INFO)
 
@@ -34,3 +35,8 @@ def call_urls(urls):
     logging.info("Done downloading")
 
     return results
+
+
+def create_dir(path):
+    if not os.path.exists(path):
+        os.makedirs(path)
