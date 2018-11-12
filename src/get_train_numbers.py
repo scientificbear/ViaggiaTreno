@@ -1,10 +1,4 @@
-import string
-import asyncio
-from aiohttp import ClientSession
-import pickle
 import csv
-from tqdm import tqdm
-import json
 import logging
 import time
 from random import random
@@ -27,27 +21,32 @@ def get_starting_station(train_list):
     return starting_stations
 
 
-def main(output_file):
+def main(configs):
 
-    step = 10
-    waiting_time = 3
+    step = configs.get('step', 100)
+    waiting_time = configs.get('waiting_time', 3)
+    output_file = configs.get('output_file')
 
     with open(output_file, mode='w') as f:
 
-        f_writer = csv.writer(f, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
+        f_writer = csv.writer(f, delimiter=',',
+                              quotechar='"',
+                              quoting=csv.QUOTE_MINIMAL)
         f_writer.writerow(['train_name', 'train_number', 'starting_station'])
 
-        for k in range(0, 100, step):
+        for k in range(configs.get('start_from'), configs.get('up_to'), step):
             time.sleep(random()*waiting_time)
             train_list =range(k, k+step)
-            logging.info("Processing chunk from %s to %s (%s items)", k, k+step, len(train_list))
+            logging.info("Processing chunk from %s to %s (%s items)",
+                k, k+step, len(train_list))
 
             starting_stations = get_starting_station(train_list)
 
             if len(starting_stations)>0:
                 logging.info("Save csv")
                 for item in starting_stations.split('\n'):
-                    item = item.split('|')[0] + '|' + item.split('|')[1].replace('-','|')
+                    item = item.split('|')[0] + '|' \
+                        + item.split('|')[1].replace('-','|')
                     f_writer.writerow(item.split('|'))
             else:
                 logging.info("Nothing to save")
@@ -58,5 +57,9 @@ def main(output_file):
 
 if __name__ == '__main__':
     logging.info("Start get_train_numbers.py")
-    main(output_file='../data/starting_stations.csv')
+    configs = {'output_file': '../data/starting_stations.csv',
+               'start_from': 0,
+               'up_to': 100000,
+               'step': 500}
+    main(configs)
     logging.info("Done get_train_numbers.py")
