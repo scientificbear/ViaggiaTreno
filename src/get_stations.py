@@ -62,8 +62,28 @@ def get_position(stations, more=''):
 
 
 def main():
-    stations = get_stations()
+    stations_raw = get_stations()
     stations = get_region(stations)
     stations = get_coordinates(stations)
     stations = get_position(stations, more='')
     stations = get_position(stations, more=' ITALIA')
+
+    with open('../data/stations.json', 'w') as f:
+        json.dump(stations, f, ensure_ascii=False)
+
+    with open('../data/stations.csv', 'w') as f:
+        f.write('id,nomeLungo,nomeBreve,lon,lat,region,codRegion,tipoStazione\n')
+        for key, value in stations_ext.items():
+            f.write('{},"{}","{}",{},{},{},{},{}\n'.format(
+                value.get('id'),
+                value.get('nomeLungo'),
+                value.get('nomeBreve'),
+                value.get('lon'),
+                value.get('lat'),
+                value.get('region'),
+                value.get('codRegion'),
+                value.get('tipoStazione')
+            ))
+
+if __name__ == '__main__':
+    main()
