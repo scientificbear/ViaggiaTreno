@@ -160,7 +160,7 @@ def get_train_status_from_API(station_id_list):
     return(train_status)
 
 
-def write_single_train(single_train, f_out_writer):
+def write_single_train(single_train, f_out_writer, f_stat_writer):
     try:
         data = json.loads(single_train)
 
@@ -172,29 +172,8 @@ def write_single_train(single_train, f_out_writer):
             stops = []
         if len(data.get('fermate', [])) > 0:
             route_info = get_route_info(data)
-
-            fname = '../data/single_train_status/{}.csv'\
-                .format(str(train_info[0]) + '_' + train_info[4])
-            with open(fname, 'a') as f_stat:
-                f_stat_writer = csv.writer(f_stat, delimiter=',',
-                                          quotechar='"',
-                                          quoting=csv.QUOTE_MINIMAL)
-                if os.stat(fname).st_size == 0:
-                    f_stat_writer.writerow(
-                        ['train_number',
-                         'trip_date',
-                         'step',
-                         'from_id',
-                         'from_planned_ts',
-                         'from_real_ts',
-                         'to_id',
-                         'to_planned_ts',
-                         'to_real_ts',
-                         'incoming_delay',
-                         'segment_delay',
-                         'final_delay'])
-                for k in route_info:
-                    f_stat_writer.writerow(k)
+            for k in route_info:
+                f_stat_writer.writerow(k)
     except Exception as e:
         logging.error(e)
         create_dir('../data/errors')
@@ -220,7 +199,14 @@ def main():
     create_dir('../data/train_status')
     create_dir('../data/single_train_status')
 
-    train_status = get_train_status_from_API(station_id_train)
+    train_status = []
+    for k in range(0, len(station_id_train), 100):
+        try:
+            raw = get_train_status_from_API(station_id_train[k:(k+100)])
+            train_status.extend(raw)
+        except:
+            logging.warning("Sleeping")
+            time.sleep(10)
     today = time.strftime('%Y-%m-%d', time.localtime(time.time()))
 
     with open('../data/train_status/{}.csv'.format(today), 'a') as f_out:
@@ -237,9 +223,26 @@ def main():
                                    'destination_id', 'destination',
                                    'num_stops',
                                    'num_deleted_stops'])
-
-        for single_train in train_status:
-            write_single_train(single_train, f_out_writer)
+        with open('../data/single_train_status/{}.csv'.format(today), 'a') as f_stat:
+            f_stat_writer = csv.writer(f_stat, delimiter=',',
+                                      quotechar='"',
+                                      quoting=csv.QUOTE_MINIMAL)
+            if os.stat('../data/single_train_status/{}.csv'.format(today)).st_size == 0:
+                f_stat_writer.writerow(
+                    ['train_number',
+                     'trip_date',
+                     'step',
+                     'from_id',
+                     'from_planned_ts',
+                     'from_real_ts',
+                     'to_id',
+                     'to_planned_ts',
+                     'to_real_ts',
+                     'incoming_delay',
+                     'segment_delay',
+                     'final_delay'])
+            for single_train in train_status:
+                write_single_train(single_train, f_out_writer, f_stat_writer)
 
 
 if __name__ == '__main__':

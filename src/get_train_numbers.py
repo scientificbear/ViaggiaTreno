@@ -27,12 +27,11 @@ def main(configs):
     waiting_time = configs.get('waiting_time', 3)
     output_file = configs.get('output_file')
 
-    with open(output_file, mode='w') as f:
+    with open(output_file, mode='a') as f:
 
         f_writer = csv.writer(f, delimiter=',',
                               quotechar='"',
                               quoting=csv.QUOTE_MINIMAL)
-        f_writer.writerow(['train_name', 'train_number', 'starting_station'])
 
         for k in range(configs.get('start_from'), configs.get('up_to'), step):
             time.sleep(random()*waiting_time)
