@@ -170,7 +170,7 @@ def write_single_train(single_train, f_out_writer, f_stat_writer):
         stops = data.get('fermate', [])
         if stops is None:
             stops = []
-        if len(data.get('fermate', [])) > 0:
+        if len(stops) > 0:
             route_info = get_route_info(data)
             for k in route_info:
                 f_stat_writer.writerow(k)
@@ -186,6 +186,8 @@ def main():
 
     with open('../data/starting_stations.csv', 'r') as f:
         csv_reader = csv.DictReader(f)
+        station_id_train = [(item['starting_station'], item['train_number'])
+                            for item in csv_reader]
         # for row in csv_reader:
         #     print('Train: {}\nnumber: {}\nstarting station id: {}\n'\
         #         .format(row['train_name'],
@@ -193,8 +195,6 @@ def main():
         #                 row['starting_station']))
         #
         # TO DO: what about duplicated ids?
-        station_id_train = [(item['starting_station'], item['train_number'])
-                            for item in csv_reader]
 
     create_dir('../data/train_status')
     create_dir('../data/single_train_status')
