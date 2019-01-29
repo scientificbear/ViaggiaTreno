@@ -63,7 +63,7 @@ def get_position(stations, more=''):
 
 def main():
     stations_raw = get_stations()
-    stations = get_region(stations)
+    stations = get_region(stations_raw)
     stations = get_coordinates(stations)
     stations = get_position(stations, more='')
     stations = get_position(stations, more=' ITALIA')

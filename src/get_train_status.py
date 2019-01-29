@@ -4,8 +4,9 @@ import os
 import time
 from random import random
 import json
-from utils import call_urls, create_dir
-logging.basicConfig(format='%(asctime)s : %(levelname)s : %(message)s', level=logging.INFO)
+from utils import call_urls, create_dir, logger
+from tqdm import tqdm
+logging.basicConfig(format='%(asctime)s : %(levelname)s : %(funcName)s : %(message)s', level=logging.INFO)
 
 
 def get_timestamp(dict, field):
@@ -15,6 +16,7 @@ def get_timestamp(dict, field):
         return None
 
 
+@logger
 def get_train_summary_info(data):
 
     train_number = data.get('numeroTreno', '')
@@ -49,6 +51,7 @@ def get_train_summary_info(data):
                   destination_id, destination,
                   len(stops),
                   len(deleted_stops)]
+    logging.debug("Returning %s", train_info)
     return train_info
 
 
@@ -118,9 +121,9 @@ def get_route_info(data):
                        from_station.get('id'),
                        get_timestamp(from_station, 'partenza_teorica'),
                        get_timestamp(from_station, 'partenzaReale'),
-                       incoming_delay,
-                       segment_delay,
-                       final_delay])
+                       final_delay,
+                       -segment_delay,
+                       incoming_delay])
         step += 1
 
         # from station to next station
@@ -138,11 +141,14 @@ def get_route_info(data):
                        incoming_delay,
                        segment_delay,
                        final_delay])
+        logging.debug("Appending %s", output[-1])
         step += 1
 
+    logging.debug("Returning %s", output)
     return output
 
 
+@logger
 def get_train_status_from_API(station_id_list):
 
     get_train_status_url = 'http://www.viaggiatreno.it/viaggiatrenonew/resteasy/viaggiatreno/andamentoTreno/{}/{}'
@@ -160,6 +166,7 @@ def get_train_status_from_API(station_id_list):
     return(train_status)
 
 
+@logger
 def write_single_train(single_train, f_out_writer, f_stat_writer):
     try:
         data = json.loads(single_train)
@@ -169,10 +176,12 @@ def write_single_train(single_train, f_out_writer, f_stat_writer):
 
         stops = data.get('fermate', [])
         if stops is None:
+            logging.debug("Stops is None")
             stops = []
         if len(stops) > 0:
             route_info = get_route_info(data)
             for k in route_info:
+                logging.debug("Writing %s", k)
                 f_stat_writer.writerow(k)
     except Exception as e:
         logging.error(e)
@@ -181,6 +190,7 @@ def write_single_train(single_train, f_out_writer, f_stat_writer):
             f_err.write(time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time())) + ',' +
                         str(data.get('numeroTreno', '')) + ',' +
                         str(data.get('idOrigine', -1)) + '\n')
+
 
 def main():
 
@@ -196,11 +206,13 @@ def main():
         #
         # TO DO: what about duplicated ids?
 
+    logging.info("station_id_train %s", len(station_id_train))
+
     create_dir('../data/train_status')
     create_dir('../data/single_train_status')
 
     train_status = []
-    for k in range(0, len(station_id_train), 100):
+    for k in tqdm(range(0, len(station_id_train), 100)):
         try:
             raw = get_train_status_from_API(station_id_train[k:(k+100)])
             train_status.extend(raw)
@@ -209,6 +221,7 @@ def main():
             time.sleep(10)
     today = time.strftime('%Y-%m-%d', time.localtime(time.time()))
 
+    logging.info("train_status %s", len(train_status))
     with open('../data/train_status/{}.csv'.format(today), 'a') as f_out:
 
         f_out_writer = csv.writer(f_out, delimiter=',',
