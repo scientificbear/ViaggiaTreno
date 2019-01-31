@@ -4,148 +4,9 @@ import os
 import time
 from random import random
 import json
-from utils import call_urls, create_dir, logger
+from utils import call_urls, create_dir, logger, train
 from tqdm import tqdm
 logging.basicConfig(format='%(asctime)s : %(levelname)s : %(funcName)s : %(message)s', level=logging.INFO)
-
-
-def get_timestamp(dict, field):
-    if dict.get(field, None) is not None:
-        return dict.get(field)/1000
-    else:
-        return None
-
-
-@logger
-def get_train_summary_info(data):
-
-    train_number = data.get('numeroTreno', '')
-    logging.debug('get_train_summary_info of train %s', train_number)
-    train_type = data.get('tipoTreno', '')
-    category = data.get('categoria','')
-    trip_date = data.get('orarioPartenzaZero',0)
-    if trip_date is None:
-        trip_date = ''
-    else:
-        trip_date = time.strftime('%Y-%m-%d', time.localtime(trip_date/1000))
-    provision = data.get('provvedimento', '')
-    deleted_stops = data.get('fermateSoppresse', [])
-    if deleted_stops is None:
-        deleted_stops = []
-    origin = data.get('origine', data.get('origineEstera', None))
-    origin_id = data.get('idOrigine', -1)
-    destination = data.get('destinazione', data.get('destinazioneEstera', None))
-    destination_id = data.get('idDestinazione')
-    stops = data.get('fermate', [])
-
-    if train_type in ('PP', 'SI', 'SF', 'ST') or provision==1:
-        logging.warning('The train %s has been deleted', train_number)
-    if data.get('haCambiNumero',False) is not False or data.get('riprogrammazione', None) is not None:
-        logging.warning('The train %s has changed id', train_number)
-
-    train_info = [train_number,
-                  trip_date,
-                  train_type,
-                  category,
-                  origin_id,origin,
-                  destination_id, destination,
-                  len(stops),
-                  len(deleted_stops)]
-    logging.debug("Returning %s", train_info)
-    return train_info
-
-
-def get_single_delay(origin, destination):
-    try:
-        if (origin.get('partenzaReale') is None or
-                origin.get('partenza_teorica') is None) and not (
-                destination.get('arrivoReale') is None or
-                destination.get('arrivo_teorico') is None):
-            logging.debug('partenzaReale or partenza_teorica not available')
-            incoming_delay = (destination.get('arrivoReale') - destination.get('arrivo_teorico'))/1000
-            final_delay = incoming_delay
-            return round(incoming_delay), 0, round(final_delay)
-        elif not (origin.get('partenzaReale') is None or
-                origin.get('partenza_teorica') is None) and (
-                destination.get('arrivoReale') is None or
-                destination.get('arrivo_teorico') is None):
-            logging.debug('arrivoReale or arrivo_teorico not available')
-            incoming_delay = 0
-            final_delay = (origin.get('partenzaReale')-origin.get('partenza_teorica'))/1000
-            segment_delay = final_delay - incoming_delay
-            return round(incoming_delay), round(segment_delay), round(final_delay)
-        elif (origin.get('partenzaReale') is None or
-                origin.get('partenza_teorica') is None) and (
-                destination.get('arrivoReale') is None or
-                destination.get('arrivo_teorico') is None):
-            logging.warning('Nor partenza nor arrivo are available')
-            return None, None, None
-        else:
-            incoming_delay = (origin.get('partenzaReale')-origin.get('partenza_teorica'))/1000
-            final_delay = (destination.get('arrivoReale') - destination.get('arrivo_teorico'))/1000
-            segment_delay = final_delay - incoming_delay
-            return round(incoming_delay), round(final_delay), round(segment_delay)
-    except Exception as e:
-        logging.error(e)
-        return None, None, None
-
-
-def get_route_info(data):
-
-    train_number = data.get('numeroTreno', '')
-    logging.info('get_route_info of train %s', train_number)
-
-    trip_date = data.get('orarioPartenzaZero',0)
-    if trip_date is None:
-        trip_date = ''
-    else:
-        trip_date = time.strftime('%Y-%m-%d', time.localtime(trip_date/1000))
-    stops = data.get('fermate', [])
-
-    step = 0
-    output = []
-    ritardo_accumulato = 0
-    logging.debug("Train %s has %s stops", train_number, len(stops))
-    for stop_number in range(len(stops)-1):
-        from_station = stops[stop_number]
-        to_station = stops[stop_number+1]
-
-        # from station to station itself
-        incoming_delay, final_delay, segment_delay = get_single_delay(from_station, from_station)
-        output.append([train_number,
-                       trip_date,
-                       step,
-                       from_station.get('id', ''),
-                       get_timestamp(from_station, 'arrivo_teorico'),
-                       get_timestamp(from_station, 'arrivoReale'),
-                       from_station.get('id'),
-                       get_timestamp(from_station, 'partenza_teorica'),
-                       get_timestamp(from_station, 'partenzaReale'),
-                       final_delay,
-                       -segment_delay,
-                       incoming_delay])
-        step += 1
-
-        # from station to next station
-        incoming_delay, final_delay, segment_delay = get_single_delay(from_station, to_station)
-
-        output.append([train_number,
-                       trip_date,
-                       step,
-                       from_station.get('id', ''),
-                       get_timestamp(from_station, 'partenza_teorica'),
-                       get_timestamp(from_station, 'partenzaReale'),
-                       to_station.get('id'),
-                       get_timestamp(to_station, 'arrivo_teorico'),
-                       get_timestamp(to_station, 'arrivoReale'),
-                       incoming_delay,
-                       segment_delay,
-                       final_delay])
-        logging.debug("Appending %s", output[-1])
-        step += 1
-
-    logging.debug("Returning %s", output)
-    return output
 
 
 @logger
@@ -167,29 +28,41 @@ def get_train_status_from_API(station_id_list):
 
 
 @logger
-def write_single_train(single_train, f_out_writer, f_stat_writer):
-    try:
-        data = json.loads(single_train)
+def write_to_files(train_status):
 
-        train_info = get_train_summary_info(data)
-        f_out_writer.writerow(train_info)
+    today = time.strftime('%Y-%m-%d', time.localtime(time.time()))
 
-        stops = data.get('fermate', [])
-        if stops is None:
-            logging.debug("Stops is None")
-            stops = []
-        if len(stops) > 0:
-            route_info = get_route_info(data)
-            for k in route_info:
-                logging.debug("Writing %s", k)
-                f_stat_writer.writerow(k)
-    except Exception as e:
-        logging.error(e)
-        create_dir('../data/errors')
-        with open('../data/errors/get_train_status.csv', 'a') as f_err:
-            f_err.write(time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time())) + ',' +
-                        str(data.get('numeroTreno', '')) + ',' +
-                        str(data.get('idOrigine', -1)) + '\n')
+    f_out_fname = '../data/train_status/{}.csv'.format(today)
+    f_out_header = ['train_number', 'trip_date', 'train_type', 'category',
+                    'origin_id', 'origin', 'destination_id', 'destination',
+                    'num_stops', 'num_deleted_stops']
+    f_stat_fname = '../data/single_train_status/{}.csv'.format(today)
+    f_stat_header = ['train_number', 'trip_date', 'step',
+                     'from_id', 'from_planned', 'from_real',
+                     'to_id', 'to_planned', 'to_real',
+                     'inc_delay', 'seg_delay', 'fin_delay']
+
+    with open(f_out_fname, 'a') as f_out, open(f_stat_fname, 'a') as f_stat:
+        logging.info("Writing to %s and %s", f_out_fname, f_stat_fname)
+        writer_out = csv.DictWriter(f_out, fieldnames=f_out_header, quoting=csv.QUOTE_MINIMAL)
+        writer_out.writeheader()
+        writer_stat = csv.DictWriter(f_stat, fieldnames=f_stat_header, quoting=csv.QUOTE_MINIMAL)
+        writer_stat.writeheader()
+
+        for item in tqdm(train_status, disable=None, desc="Writing"):
+            single_train = train(item)
+            try:
+                writer_out.writerow(single_train.get_train_info())
+            except Exception as e:
+                logging.error("writer_out" + str(e)
+                    + "\ntrain {}".format(json.loads(item).get('numeroTreno')))
+
+            try:
+                for stop in single_train.parse_segments():
+                    writer_stat.writerow(stop)
+            except Exception as e:
+                logging.error("writer_stat" + str(e)
+                    + "\ntrain {}".format(json.loads(item).get('numeroTreno')))
 
 
 def main():
@@ -198,64 +71,27 @@ def main():
         csv_reader = csv.DictReader(f)
         station_id_train = [(item['starting_station'], item['train_number'])
                             for item in csv_reader]
-        # for row in csv_reader:
-        #     print('Train: {}\nnumber: {}\nstarting station id: {}\n'\
-        #         .format(row['train_name'],
-        #                 row['train_number'],
-        #                 row['starting_station']))
-        #
+                            # if int(item['train_number']) < 34]
         # TO DO: what about duplicated ids?
 
-    logging.info("station_id_train %s", len(station_id_train))
+    logging.info("station_id_train: %s items", len(station_id_train))
 
     create_dir('../data/train_status')
     create_dir('../data/single_train_status')
 
     train_status = []
-    for k in tqdm(range(0, len(station_id_train), 100)):
+    chunk_size = 100
+    for k in tqdm(range(0, len(station_id_train), chunk_size)):
         try:
-            raw = get_train_status_from_API(station_id_train[k:(k+100)])
+            raw = get_train_status_from_API(station_id_train[k:(k+chunk_size)])
             train_status.extend(raw)
         except:
             logging.warning("Sleeping")
             time.sleep(10)
-    today = time.strftime('%Y-%m-%d', time.localtime(time.time()))
 
     logging.info("train_status %s", len(train_status))
-    with open('../data/train_status/{}.csv'.format(today), 'a') as f_out:
 
-        f_out_writer = csv.writer(f_out, delimiter=',',
-                                  quotechar='"',
-                                  quoting=csv.QUOTE_MINIMAL)
-        if os.stat('../data/train_status/{}.csv'.format(today)).st_size == 0:
-            f_out_writer.writerow(['train_number',
-                                   'trip_date',
-                                   'train_type',
-                                   'category',
-                                   'origin_id', 'origin',
-                                   'destination_id', 'destination',
-                                   'num_stops',
-                                   'num_deleted_stops'])
-        with open('../data/single_train_status/{}.csv'.format(today), 'a') as f_stat:
-            f_stat_writer = csv.writer(f_stat, delimiter=',',
-                                      quotechar='"',
-                                      quoting=csv.QUOTE_MINIMAL)
-            if os.stat('../data/single_train_status/{}.csv'.format(today)).st_size == 0:
-                f_stat_writer.writerow(
-                    ['train_number',
-                     'trip_date',
-                     'step',
-                     'from_id',
-                     'from_planned_ts',
-                     'from_real_ts',
-                     'to_id',
-                     'to_planned_ts',
-                     'to_real_ts',
-                     'incoming_delay',
-                     'segment_delay',
-                     'final_delay'])
-            for single_train in train_status:
-                write_single_train(single_train, f_out_writer, f_stat_writer)
+    write_to_files(train_status)
 
 
 if __name__ == '__main__':
