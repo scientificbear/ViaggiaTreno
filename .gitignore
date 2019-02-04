@@ -112,8 +112,3 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
-data/single_train_status/
-
-data/errors/
-
-data/train_status/
