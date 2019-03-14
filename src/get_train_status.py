@@ -80,11 +80,12 @@ def main():
     create_dir('../data/single_train_status')
 
     train_status = []
-    chunk_size = 100
+    chunk_size = 50
     for k in tqdm(range(0, len(station_id_train), chunk_size)):
         try:
             raw = get_train_status_from_API(station_id_train[k:(k+chunk_size)])
             train_status.extend(raw)
+            time.sleep(3)
         except:
             logging.warning("Sleeping")
             time.sleep(10)
