@@ -1,0 +1,369 @@
+---
+title: "Explorative Analysis"
+author: "Patrick Zecchin"
+output: 
+  html_document: 
+    fig_caption: yes
+    fig_height: 7
+    fig_width: 9
+    theme: cosmo
+    code_folding: hide
+    toc: yes
+    df_print: paged
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction
+
+Scope of this report is to have a first insight about the downloaded data.
+
+Data were downloaded every day during February 2019 at 23:40 from http://www.viaggiatreno.it/viaggiatrenonew/resteasy/viaggiatreno/*.
+
+```{r libraries, message=FALSE, warning=FALSE}
+# The following libraries will be used:
+
+library(readr)
+library(ggplot2)
+library(dplyr)
+library(tibble)
+library(magrittr)
+library(knitr)
+library(forcats)
+library(leaflet)
+library(lubridate)
+library(igraph)
+library(tidygraph)
+library(ggraph)
+library(tidyr)
+```
+
+# Stations
+
+First of all, the list of available train stations and their metadata.
+
+```{r import stations, message=FALSE}
+stations <- read_csv("../data/stations.csv", na = "None")
+stations %>% head() 
+```
+
+```{r map}
+factpal <- colorFactor(rainbow(stations %>% pull(region) %>% unique() %>% length()),
+                       stations$region)
+
+leaflet(stations) %>% 
+  addProviderTiles(providers$ Stamen.TonerLite) %>% 
+    setView(lng = 12.567380,
+            lat = 41.871941,
+            zoom = 6) %>% 
+  addCircleMarkers(
+    lat=~lat,
+    lng=~lon,
+    popup = paste0("<b>STATION DETAILS</b>",
+                   "<br/><b>id:</b> ", stations$id,
+                   "<br/><b>nomeLungo:</b> ", stations$nomeLungo,
+                   "<br/><b>lon:</b> ", stations$lon,
+                   "<br/><b>lat:</b> ", stations$lat,
+                   "<br/><b>region:</b> ", stations$region,
+                   "<br/><b>codRegion:</b> ", stations$codRegion,
+                   "<br/><b>tipoStazione:</b> ", stations$tipoStazione),
+    label = ~nomeLungo,
+    radius = 4,
+    stroke = F,
+    fillOpacity = 0.8,
+    color = ~factpal(region)
+  )
+```
+
+As it is possible to see from the excerpt, the following fields have been made available via API:
+
+* `id`: the unique station identifier
+* `nomeLungo` and `nomeBreve`: the station common name
+* `lon` and `lat`: geographical coordinates
+* `region`: the region of the station (available for `r stations %>% mutate(regionNa = is.na(region)) %>% group_by(regionNa) %>% summarise(count = n()) %>% mutate(perc = 100*count/sum(count)) %>% filter(!regionNa) %>% pull(count)` rows, `r stations %>% mutate(regionNa = is.na(region)) %>% group_by(regionNa) %>% summarise(count = n()) %>% mutate(perc = 100*count/sum(count)) %>% filter(!regionNa) %>% pull(perc)`% of the total)
+* `codRegion`: always not available
+* `tipoStazione`: not clear.
+
+The following plot shows the distribution of stations by region. Please note that:
+
+* some regions are clearly identifiable (e.g. `3` corresponds to Piedmont, `4` to Aosta Valley)
+* Trentino-Alto Adige/Südtirol seems to be splitted in three (`9`, `21`, `22`)
+* `NA` is unfortunately the most common region code, followd by `3` (Piedmont) and `1` (Lombardy).
+
+```{r by region}
+stations %>% 
+  group_by(region) %>% 
+  summarise(count = n(), 
+            stations = paste(nomeBreve, collapse = ", ")) %>% 
+  mutate(stations = paste0(region, ": ", substr(stations, 1, 80))) %>% 
+  ggplot(aes(fct_reorder(stations, -region), count)) +
+  geom_col(aes(fill=!is.na(region))) +
+  xlab("Region code and sample stations") + 
+  ylab("Number of stations") +
+  ggtitle("Stations by region") +
+  scale_fill_grey("Region code available", start=0.8, end=0.4) +
+  coord_flip() + 
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+
+
+# Train trips (aggregated)
+
+The second dataset is one row per train trip. More in details, it is possible to find:
+
+* `train_number`: the train identifier
+* `trip_date`
+* `category`: the train level of service
+* `origin` and `origin_id`
+* `destination` and `destination_id`
+* `num_stops` and `num_deleted_stops`: the number of stops, expected and deleted.
+
+```{r aggregated trips, message=FALSE}
+aggr <- list.files(path="../data/train_status", pattern="*.csv") %>% 
+  paste0("../data/train_status/", .) %>% 
+  lapply(., function(x) read.csv(x, stringsAsFactors = FALSE)) %>% 
+  do.call(rbind, .) %>% 
+  mutate(trip_date = as.Date(trip_date))
+
+aggr %>% head()
+```
+
+Please note that `train_number` unfortunately is not a true identifier. Consider for example `trip_date: 2019-02-01`, the following (sampled) train ids appear more than once.
+
+```{r}
+aggr %>% 
+  filter(trip_date=="2019-02-01") %>% 
+  group_by(train_number) %>% 
+  summarise(count = n()) %>% 
+  arrange(desc(count)) %>% 
+  head(5)
+```
+
+I checked manually on the online portal for some of these and, for example:
+
+* `ES 8583` starts from Genova Principe and becomes `8584` in Pisa Centrale, `8585` in Firenze Rifredi and `8586` in Roma Tiburtina
+* `ES 8587` is the same as `8583`, on the way back
+* `REG 26618` starts from Agrigento Centrale and becomes `26617` in Lercara, `26616` in Roccapalumba-Alia and `26619` in Caltanissetta Xirbi.
+
+However, this phenomenon seems to be not too widespread.
+
+```{r duplicated ids, fig.height=3}
+temp <- aggr %>% 
+  filter(trip_date=="2019-02-01") %>% 
+  group_by(train_number) %>% 
+  summarise(count = n()) %>% 
+  group_by(count) %>% 
+  summarise(num_occ = n()) %>% 
+   mutate(perc=num_occ/sum(num_occ))
+
+temp %>% 
+  ggplot(aes(fct_reorder(as.factor(count), num_occ), num_occ)) + 
+  geom_col() +
+  labs(x = "Number of occurrences",
+       y = "Number of trains",
+       title = "Distribution of number of occurrences of the same train id, 2019-02-01",
+       subtitle = paste0(temp %>% filter(count==1) %>% pull(perc) %>% `*`(100) %>% round(), "% of ids appears only once")) +
+  coord_flip() +
+  theme_minimal()
+```
+
+The following plot shows how many trains the system recorded during each day. A couple of annotations have to be made here:
+
+* due to some technical inconvenience, Saturday 23rd and Sunday 24th February were not recorded. Since the final scope of the analysis does not include an historical/trend analysis of these data, the missing days have been replaced by Saturday 2nd and Sunday 10th March.
+* something (unknown) happened during Tuesday 19th February, when only ~4K ids were downloaded (a "tipical" Tuesday has ~10K ids). Unfortunately, it's not clear where the issue was originated.
+
+```{r id by day, fig.height=4}
+aggr %>% 
+  mutate(dow = weekdays(trip_date, T), dow = ifelse(dow %in% c("sab", "dom"), TRUE, FALSE)) %>%
+  ggplot() +
+  geom_bar(aes(trip_date, fill=dow)) +
+  scale_fill_grey(start=0.4, end=0.8) +
+  labs(title = "Recorded trains by day",
+       subtitle = "Coloured by weekday/weekend",
+       x = "Date",
+       y = "Number of trains") +
+  theme_minimal() + 
+  theme(legend.position = "None")
+```
+
+The next plots show, respectively, the distribution of the train level of service, of the number of stops and of the starting station.
+
+```{r level of service, fig.height=4}
+aggr %>% 
+  group_by(category) %>% 
+  summarise(count = n()) %>% 
+  mutate(count = count/sum(count)) %>% 
+  ggplot(aes(x=fct_reorder(category, count), y=count)) +
+  geom_col() +
+  geom_text(aes(y = count + 0.02, label = paste0(round(100*count), "%"))) +
+  xlab("") + 
+  ylab(("")) +
+  ggtitle("% of trains by class type") +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  coord_flip() +
+  theme_minimal() 
+```
+
+```{r num stops, fig.height=4}
+ndays <- aggr %>% pull(trip_date) %>% n_distinct()
+
+aggr %>% 
+  group_by(num_stops) %>% 
+  summarise(count = n()/ndays) %>% 
+  ggplot(aes(x=num_stops, y=count)) +
+  geom_col() + 
+  xlab("Number of stops") + 
+  ylab("(vg) Number of trains per day") +
+  ggtitle("Distribution of number of stops") +
+  theme_minimal() 
+```
+
+```{r starting station, fig.height=4}
+aggr %>% 
+  group_by(origin) %>% 
+  summarise(count = n()/ndays) %>% 
+  arrange(desc(count)) %>% 
+  head(20) %>% 
+  ggplot() +
+  geom_bar(aes(x=fct_reorder(origin,count), y=count), stat = "identity") +
+  ylab("(avg) Number of trains") +
+  xlab("Starting station") +
+  ggtitle("Number of trains by starting station (top 20)") +
+  coord_flip() +
+  theme_minimal()
+```
+
+
+# Single trains
+
+The last dataset contains one row for each "segment" of trip.
+
+```{r single train import}
+raw_data <- list.files(path="../data/single_train_status", pattern="*.csv") %>% 
+  paste0("../data/single_train_status/", .) %>% 
+  lapply(., function(x) read.csv(x, stringsAsFactors = FALSE)) %>% 
+  do.call(rbind, .) %>% 
+  mutate(trip_date = as.Date(trip_date),
+         from_planned = as_datetime(from_planned, tz="Europe/Rome"),
+         from_real = as_datetime(from_real, tz="Europe/Rome"),
+         to_planned = as_datetime(to_planned, tz="Europe/Rome"),
+         to_real = as_datetime(to_real, tz="Europe/Rome"),
+         inc_delay = as.numeric(inc_delay)/60,
+         seg_delay = as.numeric(seg_delay)/60,
+         fin_delay = as.numeric(fin_delay)/60)
+
+raw_data %>% head()
+```
+
+The available fields are the following:
+
+* `train_number`: the train identifier, as seen above
+* `trip_date`: the date the files was downloaded, that is the date of the trip
+* `step`: the incremental segment identifier
+* `from_id`, `from_planned`, `from_real`: starting station id, planned departure time and real departure time
+* `to_id`, `to_planned`, `to_real`: destination station id, planned arrival time and real arrival time
+* `inc_delay`, `seg_delay`, `fin_delay`: delay (in minutes) gained before the segment, during the segment and at the end of it.
+
+Incoming, segment and final delay are computed as follows:
+$$inc\_delay = from\_real-from\_planned$$
+$$fin\_delay = to\_real-to\_planned$$
+$$seg\_delay = fin\_delay-inc\_delay.$$
+
+
+The following picture may help understand the data model and the meaning of the `step` variable. Consider for example train `10`:
+
+0. at step `0`, it starts at Venezia S.Lucia (`S02593`) with 2 min delay
+1. at step `1`, it moves from Venezia S.Lucia to Venezia Mestre (`S02589`); its delay is 2 mins (from step `0`) plus 1 min
+2. at step `2`, it stays in Venezia Mestre (that is, it "starts" rom Venezia Mestre and it arrives in Venezia Mestre), with a incoming delay of 3 mins and gaining 0.5 min of delay in the station stop
+3. at step `3`, it moves from Venezia Mestre to Padova (`S02581`), starting with 3.5 mins of delay and arriving just 1 min late (that is, recovering 2.5 mins)
+4. etc.
+
+This data model should make it easier to check the train delays and where they are originated.
+
+```{r sample trip}
+temp <- raw_data %>% 
+  filter(train_number==10, trip_date=="2019-02-01") %>% 
+    left_join(., stations %>% select(id, nomeBreve), by=c("from_id"="id")) %>% 
+  rename("from"="nomeBreve") %>% 
+  left_join(., stations %>% select(id, nomeBreve), by=c("to_id"="id")) %>% 
+  rename("to"="nomeBreve")
+
+temp
+```
+
+```{r sample graph}
+routes_tidy <- tbl_graph(nodes = stations %>% 
+                           filter(nomeBreve %in% c(temp$from, temp$to)) %>% 
+                           select(nomeBreve) %>% 
+                           rename(name=nomeBreve),
+                         edges = temp %>% select(from, to),
+                         directed = TRUE)
+plot(routes_tidy,
+     edge.arrow.size=.5,
+     vertex.size=5, 
+     vertex.frame.color="black", 
+     vertex.label.color="black", 
+     vertex.label.cex=1,
+     vertex.label.dist=2,
+     edge.curved=0,
+     edge.label=temp$step,
+     main="Train 10 (2019-02-01)")
+```
+
+The next plot shows the number of data points available by time (`from_planned`). It is possible to point out the same notes highlighted above, that are the data about Saturday 23rd and Sunday 24th February and the issue during Tuesday 19th.
+
+```{r, warning=FALSE, fig.height=4}
+
+raw_data %>% 
+  mutate(dow = weekdays(trip_date, T), dow = ifelse(dow %in% c("sab", "dom"), TRUE, FALSE)) %>%
+  ggplot(aes(x=from_planned, fill=dow)) +
+  geom_histogram(bins = ndays*6) +
+  scale_fill_grey(start=0.4, end=0.8) +
+  labs(title = "Number of observations by time",
+       subtitle = "Coloured by weekday/weekend",
+       x = "Date",
+       y = "Number of datapoints") +
+  theme_minimal() + 
+  theme(legend.position = "None")
+```
+
+The number of data points per hour of day highlights the same pattern shown in the previous plot, with a peak during the morning commute hour and a second height during the afternoon.
+
+```{r, fig.height=4}
+raw_data %>% 
+  filter(!is.na(from_planned), trip_date != "2019-02-19") %>% 
+  mutate(hour = hour(from_planned)) %>% 
+  group_by(hour, trip_date) %>% 
+  summarise(count=n()) %>% 
+  ggplot() +
+  geom_boxplot(aes(x=hour, group=hour, y=count)) +
+  xlab("Hour of day") + 
+  ylab("Number of datapoints") +
+  ggtitle("Number of observations by hour of day") +
+  theme_minimal()
+```
+
+For what concerns data availability, the next table presents the number of observation by available feature. More in detail
+
+* about 70% of the data contains all the four timestamps
+* 10% does not have neither `from_real` nor `to_real`
+* 7% does not have `from_real` and another 7% `to_real`.
+
+```{r}
+raw_data %>%
+  select(from_planned, from_real, to_planned, to_real) %>% 
+  mutate(from_planned = !is.na(from_planned),
+         from_real = !is.na(from_real),
+         to_planned = !is.na(to_planned),
+         to_real = !is.na(to_real)) %>% 
+  group_by(from_planned, from_real, to_planned, to_real) %>% 
+  summarise(count = n()) %>% 
+  ungroup() %>% 
+  mutate(perc = round(count/sum(count),3))
+```
